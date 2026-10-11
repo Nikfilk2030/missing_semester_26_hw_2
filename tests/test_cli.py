@@ -55,13 +55,16 @@ class StudentCliTests(unittest.TestCase):
         task = self.root / "workspace" / DIRECTORIES[1]
         marker = task / "student-notes.txt"
         marker.write_text("Keep this work\n")
-        result, _ = self.invoke("init")
+        result, feedback = self.invoke("init")
         self.assertEqual(result, 0)
+        self.assertIn("уже созданы", feedback)
         self.assertEqual(marker.read_text(), "Keep this work\n")
         self.assertEqual(manifest.read_bytes(), before)
         shutil.rmtree(self.root / "workspace")
-        result, _ = self.invoke("init")
+        result, feedback = self.invoke("init")
         self.assertEqual(result, 0)
+        self.assertIn("Готово: 32 задачи", feedback)
+        self.assertNotIn("Восстановлено отправок", feedback)
         self.assertEqual(manifest.read_bytes(), before)
         self.assertFalse(marker.exists())
         self.assertEqual(len([path for path in (self.root / "workspace").iterdir() if path.is_dir()]), 32)
@@ -118,8 +121,9 @@ class StudentCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertNotEqual(archive_path.read_bytes(), before)
         shutil.rmtree(self.root / "workspace")
-        result, _ = self.invoke("init")
+        result, feedback = self.invoke("init")
         self.assertEqual(result, 0)
+        self.assertIn("Восстановлено отправок: 1", feedback)
         self.assertEqual(note.read_text(), "second attempt\n")
 
     def test_malformed_saved_archive_stops_restore_without_losing_archive(self) -> None:

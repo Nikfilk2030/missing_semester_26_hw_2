@@ -92,12 +92,13 @@ def _write_manifest(root: Path, repository: str, seed: str) -> None:
             os.unlink(name)
 
 
-def _restore_submissions(root: Path, staged: Path) -> None:
+def _restore_submissions(root: Path, staged: Path) -> int:
     submissions = root / "submissions"
     if submissions.is_symlink() or (submissions.exists() and not submissions.is_dir()):
         raise CliError("Папка submissions повреждена; рабочие данные не изменены.")
     if not submissions.exists():
-        return
+        return 0
+    restored_count = 0
     for directory in DIRECTORIES.values():
         archive_path = submissions / f"{directory}.tar"
         if not archive_path.exists() and not archive_path.is_symlink():
@@ -118,6 +119,8 @@ def _restore_submissions(root: Path, staged: Path) -> None:
                 raise CliError(f"Архив submissions/{directory}.tar повреждён; рабочие данные не изменены.")
             shutil.rmtree(staged / directory)
             restored.rename(staged / directory)
+            restored_count += 1
+    return restored_count
 
 
 def init(root: Path) -> None:
@@ -134,18 +137,21 @@ def init(root: Path) -> None:
     restoring = manifest.exists()
     repository = _repository(root)
     seed = _seed(root) if restoring else seed_for_repository(repository)
+    restored_count = 0
     with tempfile.TemporaryDirectory(prefix=".hw2-init-", dir=root) as temporary:
         staged = Path(temporary) / "workspace"
         staged.mkdir()
         build(staged, seed, None)
         if restoring:
-            _restore_submissions(root, staged)
+            restored_count = _restore_submissions(root, staged)
         if not manifest.exists():
             if _repository(root) != repository:
                 raise CliError("Origin изменился во время создания задач; данные не изменены.")
             _write_manifest(root, repository, seed)
         staged.rename(workspace)
-    print("Созданы 32 задачи в workspace/ (с восстановлением сохранённых отправок). Манифест и отправки сохраняйте в Git.")
+    print("Готово: 32 задачи в workspace/.")
+    if restoring and restored_count:
+        print(f"Восстановлено отправок: {restored_count}.")
 
 
 def _task_number(value: str) -> int:

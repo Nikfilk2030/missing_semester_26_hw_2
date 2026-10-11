@@ -14,6 +14,7 @@ class PublicReleaseTests(unittest.TestCase):
         self.assertEqual(len({item["id"] for item in catalog}), 32)
         self.assertEqual(len({item["path"] for item in catalog}), 32)
         self.assertTrue(all("hint" not in item for item in catalog))
+        self.assertTrue(all(set(item) <= {"id", "path", "revision", "difficulty", "points"} for item in catalog))
         for number, item in enumerate(catalog, 1):
             self.assertTrue(item["path"].startswith(f"{number:02d}_"))
             self.assertIn(f'<a id="task-{number:02d}"></a>', conditions)
