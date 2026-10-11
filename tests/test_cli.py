@@ -179,6 +179,13 @@ class StudentCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("01: зачтено", feedback)
 
+    def test_local_clone_with_hardlinked_objects_is_accepted(self) -> None:
+        task = self.root / "workspace/18_clone"
+        subprocess.run(["git", "clone", "-q", "remote.git", "repo"], cwd=task, check=True, capture_output=True)
+        result, feedback = self.invoke("check", "18")
+        self.assertEqual(result, 0, feedback)
+        self.assertIn("18: зачтено", feedback)
+
     def test_all_initial_tasks_fit_safe_archive_and_roundtrip(self) -> None:
         for task in CATALOG:
             with self.subTest(task=task["path"]):
