@@ -197,15 +197,27 @@ def _archive(task: Path) -> bytes:
     _preflight(task)
     stream = io.BytesIO()
 
-    def regular_only(info: tarfile.TarInfo) -> tarfile.TarInfo:
-        if not (info.isfile() or info.isdir()):
+    def add(archive: tarfile.TarFile, path: Path, arcname: str) -> None:
+        # Hard links (e.g. objects shared by a local `git clone`) are stored as
+        # independent regular files: the checker accepts only files and folders.
+        info = path.lstat()
+        member = tarfile.TarInfo(arcname)
+        member.mode = stat.S_IMODE(info.st_mode)
+        member.mtime = int(info.st_mtime)
+        if stat.S_ISDIR(info.st_mode):
+            member.type = tarfile.DIRTYPE
+            archive.addfile(member)
+            for child in sorted(path.iterdir()):
+                add(archive, child, f"{arcname}/{child.name}")
+        elif stat.S_ISREG(info.st_mode):
+            member.size = info.st_size
+            with path.open("rb") as source:
+                archive.addfile(member, source)
+        else:
             raise CliError("Ссылки и специальные файлы в задаче не поддерживаются.")
-        info.uid = info.gid = 0
-        info.uname = info.gname = ""
-        return info
 
-    with tarfile.open(fileobj=stream, mode="w", dereference=False) as archive:
-        archive.add(task, arcname=task.name, recursive=True, filter=regular_only)
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        add(archive, task, task.name)
     payload = stream.getvalue()
     if len(payload) > MAX_ARCHIVE:
         raise CliError("Архив задачи превышает лимит 16 МБ.")
