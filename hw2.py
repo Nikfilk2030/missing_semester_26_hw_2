@@ -144,6 +144,9 @@ def _configure_author(repo: Path, *, preserve_existing: bool = False) -> None:
 
 
 def _configure_task_author(task: Path) -> None:
+    # Configuring a local author is the objective of the first exercise.
+    if task.name == CATALOG[0]["path"]:
+        return
     for repo in (task, task / "repo"):
         if repo.is_symlink() or (repo / ".git").is_symlink():
             raise CliError("Репозиторий задачи не должен быть ссылкой.")

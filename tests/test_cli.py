@@ -164,6 +164,8 @@ class StudentCliTests(unittest.TestCase):
         for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
             environment.pop(key, None)
         for arguments in (
+            ("config", "--local", "user.name", "Student"),
+            ("config", "--local", "user.email", "student@example.invalid"),
             ("add", "project.txt"),
             ("commit", "-m", "Initial project"),
         ):
@@ -181,10 +183,10 @@ class StudentCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("01: зачтено", feedback)
 
-    def test_init_sets_local_author_in_root_and_all_task_repositories(self) -> None:
+    def test_init_sets_local_author_except_in_first_task(self) -> None:
         self.assertEqual(git(self.fixture_root, "config", "--local", "--get", "user.name"), "Student")
         self.assertEqual(git(self.fixture_root, "config", "--local", "--get", "user.email"), "student@example.invalid")
-        repo = self.root / "workspace/01_setup/repo"
+        repo = self.root / "workspace/03_commit"
         git(repo, "config", "--local", "--unset", "user.name")
         git(repo, "config", "--local", "--unset", "user.email")
         before = self.tree_bytes(self.root / "workspace/03_commit")
@@ -193,6 +195,8 @@ class StudentCliTests(unittest.TestCase):
         self.assertEqual(result, 0, feedback)
         repositories = [self.root]
         for directory in DIRECTORIES.values():
+            if directory == CATALOG[0]["path"]:
+                continue
             task = self.root / "workspace" / directory
             repositories.extend(path for path in (task, task / "repo") if (path / ".git").is_dir())
         for repository in repositories:
@@ -202,7 +206,35 @@ class StudentCliTests(unittest.TestCase):
         control = self.root / "workspace/01_setup/control"
         self.assertEqual(git(control, "config", "--local", "--get", "user.name"), "Control")
         self.assertEqual(git(control, "config", "--local", "--get", "user.email"), "control@example.invalid")
-        self.assertEqual(self.tree_bytes(self.root / "workspace/03_commit"), before)
+        after = self.tree_bytes(self.root / "workspace/03_commit")
+        self.assertEqual({name: data for name, data in after.items() if name != ".git/config"},
+                         {name: data for name, data in before.items() if name != ".git/config"})
+
+    def test_first_task_requires_manual_author_after_init_and_revert(self) -> None:
+        repo = self.root / "workspace/01_setup/repo"
+        for key in ("user.name", "user.email"):
+            self.assertEqual(git(repo, "config", "--local", "--get", key, allow_status1=True), "")
+        git(repo, "config", "--local", "user.name", "Manual User")
+        git(repo, "config", "--local", "user.email", "manual@example.invalid")
+        config_before = (repo / ".git/config").read_bytes()
+        result, feedback = self.invoke("init")
+        self.assertEqual(result, 0, feedback)
+        self.assertEqual((repo / ".git/config").read_bytes(), config_before)
+        result, feedback = self.invoke("revert", "1")
+        self.assertEqual(result, 0, feedback)
+        for key in ("user.name", "user.email"):
+            self.assertEqual(git(repo, "config", "--local", "--get", key, allow_status1=True), "")
+        environment = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+            environment.pop(key, None)
+        for arguments in (
+            ("config", "--local", "user.name", "Student"),
+            ("config", "--local", "user.email", "student@example.invalid"),
+            ("add", "project.txt"), ("commit", "-m", "Manual author setup"),
+        ):
+            subprocess.run(["git", *arguments], cwd=repo, env=environment, capture_output=True, check=True)
+        result, feedback = self.invoke("check", "1")
+        self.assertEqual(result, 0, feedback)
 
     def test_init_preserves_personal_root_author(self) -> None:
         global_config = self.root / "global.gitconfig"
@@ -228,17 +260,17 @@ class StudentCliTests(unittest.TestCase):
         self.assertEqual(global_config.read_text(), "[user]\nname = Personal User\nemail = personal@example.invalid\n")
 
     def test_revert_sets_author_for_a_commit_without_global_config(self) -> None:
-        repo = self.root / "workspace/01_setup/repo"
+        repo = self.root / "workspace/03_commit"
         git(repo, "config", "--local", "user.name", "Wrong")
         git(repo, "config", "--local", "user.email", "wrong@example.invalid")
-        result, feedback = self.invoke("revert", "1")
+        result, feedback = self.invoke("revert", "3")
         self.assertEqual(result, 0, feedback)
         environment = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
             environment.pop(key, None)
         for arguments in (("add", "project.txt"), ("commit", "-m", "First commit")):
             subprocess.run(["git", *arguments], cwd=repo, env=environment, check=True, capture_output=True)
-        result, feedback = self.invoke("check", "1")
+        result, feedback = self.invoke("check", "3")
         self.assertEqual(result, 0, feedback)
 
     def test_local_clone_with_hardlinked_objects_is_accepted(self) -> None:
