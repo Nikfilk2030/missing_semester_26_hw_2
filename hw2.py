@@ -11,7 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 
-from hw2_engine import CATALOG, DIRECTORIES, MAX_ARCHIVE, build, check, extract_submission, repository_slug, seed_for_repository
+from hw2_engine import CATALOG, DIRECTORIES, MAX_ARCHIVE, build, check, extract_submission, git, repository_slug, seed_for_repository
 
 
 SCHEMA = "git-hw2-2"
@@ -123,6 +123,34 @@ def _restore_submissions(root: Path, staged: Path) -> int:
     return restored_count
 
 
+def _configure_author(repo: Path, *, preserve_existing: bool = False) -> None:
+    metadata = repo / ".git"
+    if repo.is_symlink() or metadata.is_symlink() or (metadata / "config").is_symlink():
+        raise CliError("Репозиторий и его конфигурация не должны быть ссылками.")
+    try:
+        for key, fallback in (("user.name", "Student"), ("user.email", "student@example.invalid")):
+            if preserve_existing:
+                result = subprocess.run(
+                    ["git", "config", "--get", key], cwd=repo,
+                    capture_output=True, text=True, timeout=4,
+                )
+                if result.returncode not in (0, 1):
+                    raise ValueError("Не удалось прочитать настройки автора.")
+                if result.returncode == 0 and result.stdout.strip():
+                    continue
+            git(repo, "config", "--local", key, fallback)
+    except (ValueError, subprocess.SubprocessError) as error:
+        raise CliError("Не удалось настроить локального автора коммитов.") from error
+
+
+def _configure_task_author(task: Path) -> None:
+    for repo in (task, task / "repo"):
+        if repo.is_symlink() or (repo / ".git").is_symlink():
+            raise CliError("Репозиторий задачи не должен быть ссылкой.")
+        if (repo / ".git").is_dir():
+            _configure_author(repo)
+
+
 def init(root: Path) -> None:
     workspace = root / "workspace"
     manifest = _manifest(root)
@@ -132,7 +160,10 @@ def init(root: Path) -> None:
         if not workspace.is_dir() or not manifest.is_file():
             raise CliError("Папка workspace уже существует; данные не изменены.")
         _seed(root)
-        print("Задачи уже созданы в workspace/. Данные не изменены.")
+        _configure_author(root, preserve_existing=True)
+        for directory in DIRECTORIES.values():
+            _configure_task_author(workspace / directory)
+        print("Задачи уже созданы в workspace/. Локальные настройки автора обновлены; файлы и история сохранены.")
         return
     restoring = manifest.exists()
     repository = _repository(root)
@@ -144,6 +175,9 @@ def init(root: Path) -> None:
         build(staged, seed, None)
         if restoring:
             restored_count = _restore_submissions(root, staged)
+        for directory in DIRECTORIES.values():
+            _configure_task_author(staged / directory)
+        _configure_author(root, preserve_existing=True)
         if not manifest.exists():
             if _repository(root) != repository:
                 raise CliError("Origin изменился во время создания задач; данные не изменены.")
@@ -170,6 +204,36 @@ def _task_directory(root: Path, number: int) -> Path:
     if workspace.is_symlink() or not workspace.is_dir() or task.is_symlink() or not task.is_dir():
         raise CliError("Папка задачи не найдена. Запустите: python3 hw2.py init")
     return task
+
+
+def revert(root: Path, selection: str) -> None:
+    number = _task_number(selection)
+    seed = _seed(root)
+    workspace = root / "workspace"
+    task = workspace / DIRECTORIES[number]
+    if workspace.is_symlink() or not workspace.is_dir():
+        raise CliError("Папка workspace не найдена. Запустите: python3 hw2.py init")
+    if task.is_symlink() or (task.exists() and not task.is_dir()):
+        raise CliError("Папка задачи должна быть обычным каталогом.")
+    with tempfile.TemporaryDirectory(prefix=".hw2-revert-", dir=workspace) as temporary:
+        staging = Path(temporary)
+        fresh = staging / "fresh"
+        fresh.mkdir()
+        try:
+            build(fresh, seed, number)
+        except (ValueError, subprocess.SubprocessError) as error:
+            raise CliError("Не удалось создать исходную задачу; рабочие данные не изменены.") from error
+        _configure_task_author(fresh / task.name)
+        previous = staging / "previous"
+        if task.exists():
+            task.rename(previous)
+        try:
+            (fresh / task.name).rename(task)
+        except OSError:
+            if previous.exists():
+                previous.rename(task)
+            raise
+    print(f"{ID_TO_NUMBER[number]:02d}: задача восстановлена в workspace/{task.name}/. Прежняя попытка удалена.")
 
 
 def _preflight(task: Path) -> None:
@@ -288,6 +352,12 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
     delivery = commands.add_parser("submit", help="создать архив для сдачи")
     delivery.add_argument("task", metavar="N")
     delivery.add_argument("--force", action="store_true", help="заменить архив, даже если проверка не пройдена")
+    reset = commands.add_parser(
+        "revert",
+        help="вернуть одну задачу к исходному состоянию",
+        description="Вернуть одну задачу к исходному состоянию. Её текущие файлы, настройки и история удаляются без резервной копии; остальные задачи и архивы submissions/ не меняются.",
+    )
+    reset.add_argument("task", metavar="N")
     arguments = parser.parse_args(argv)
     try:
         if arguments.command == "init":
@@ -297,6 +367,9 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
             return 0 if check_tasks(root, arguments.task) else 1
         if arguments.command == "submit":
             submit(root, arguments.task, force=arguments.force)
+            return 0
+        if arguments.command == "revert":
+            revert(root, arguments.task)
             return 0
     except (CliError, OSError, tarfile.TarError) as error:
         print(f"Ошибка: {error}")

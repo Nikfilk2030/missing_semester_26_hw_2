@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import hw2
-from hw2_engine import CATALOG, DIRECTORIES, extract_submission
+from hw2_engine import CATALOG, DIRECTORIES, extract_submission, git
 
 
 REMOTE = "https://github.com/student/missing-semester-hw2.git"
@@ -30,7 +31,7 @@ class StudentCliTests(unittest.TestCase):
         cls.addClassCleanup(cls.fixture.cleanup)
         cls.fixture_root = Path(cls.fixture.name)
         cls.configure_origin(cls.fixture_root)
-        with redirect_stdout(io.StringIO()):
+        with redirect_stdout(io.StringIO()), patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}):
             result = hw2.main(["init"], root=cls.fixture_root)
         if result != 0:
             raise AssertionError("Could not create the CLI fixture")
@@ -159,13 +160,14 @@ class StudentCliTests(unittest.TestCase):
 
     def test_first_task_student_check_submit_and_restore(self) -> None:
         repo = self.root / "workspace/01_setup/repo"
+        environment = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+            environment.pop(key, None)
         for arguments in (
-            ("config", "--local", "user.name", "Student"),
-            ("config", "--local", "user.email", "student@example.invalid"),
             ("add", "project.txt"),
             ("commit", "-m", "Initial project"),
         ):
-            subprocess.run(["git", *arguments], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", *arguments], cwd=repo, env=environment, check=True, capture_output=True)
         result, feedback = self.invoke("check", "1")
         self.assertEqual(result, 0)
         self.assertIn("01: зачтено", feedback)
@@ -178,6 +180,66 @@ class StudentCliTests(unittest.TestCase):
         result, feedback = self.invoke("check", "1")
         self.assertEqual(result, 0)
         self.assertIn("01: зачтено", feedback)
+
+    def test_init_sets_local_author_in_root_and_all_task_repositories(self) -> None:
+        self.assertEqual(git(self.fixture_root, "config", "--local", "--get", "user.name"), "Student")
+        self.assertEqual(git(self.fixture_root, "config", "--local", "--get", "user.email"), "student@example.invalid")
+        repo = self.root / "workspace/01_setup/repo"
+        git(repo, "config", "--local", "--unset", "user.name")
+        git(repo, "config", "--local", "--unset", "user.email")
+        before = self.tree_bytes(self.root / "workspace/03_commit")
+        with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}):
+            result, feedback = self.invoke("init")
+        self.assertEqual(result, 0, feedback)
+        repositories = [self.root]
+        for directory in DIRECTORIES.values():
+            task = self.root / "workspace" / directory
+            repositories.extend(path for path in (task, task / "repo") if (path / ".git").is_dir())
+        for repository in repositories:
+            with self.subTest(repository=repository):
+                self.assertEqual(git(repository, "config", "--local", "--get", "user.name"), "Student")
+                self.assertEqual(git(repository, "config", "--local", "--get", "user.email"), "student@example.invalid")
+        control = self.root / "workspace/01_setup/control"
+        self.assertEqual(git(control, "config", "--local", "--get", "user.name"), "Control")
+        self.assertEqual(git(control, "config", "--local", "--get", "user.email"), "control@example.invalid")
+        self.assertEqual(self.tree_bytes(self.root / "workspace/03_commit"), before)
+
+    def test_init_preserves_personal_root_author(self) -> None:
+        global_config = self.root / "global.gitconfig"
+        global_config.write_text("[user]\nname = Personal User\nemail = personal@example.invalid\n")
+        with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(global_config), "GIT_CONFIG_NOSYSTEM": "1"}):
+            for existing_workspace in (True, False):
+                with self.subTest(existing_workspace=existing_workspace):
+                    if not existing_workspace:
+                        shutil.rmtree(self.root / "workspace")
+                    result, feedback = self.invoke("init")
+                    self.assertEqual(result, 0, feedback)
+                    for key in ("user.name", "user.email"):
+                        local = subprocess.run(["git", "config", "--local", "--get", key], cwd=self.root, capture_output=True)
+                        self.assertEqual(local.returncode, 1)
+                    author = subprocess.run(["git", "var", "GIT_AUTHOR_IDENT"], cwd=self.root, capture_output=True, text=True, check=True)
+                    self.assertIn("Personal User <personal@example.invalid>", author.stdout)
+            git(self.root, "config", "--local", "user.name", "Local User")
+            git(self.root, "config", "--local", "user.email", "local@example.invalid")
+            result, feedback = self.invoke("init")
+            self.assertEqual(result, 0, feedback)
+            self.assertEqual(git(self.root, "config", "--local", "--get", "user.name"), "Local User")
+            self.assertEqual(git(self.root, "config", "--local", "--get", "user.email"), "local@example.invalid")
+        self.assertEqual(global_config.read_text(), "[user]\nname = Personal User\nemail = personal@example.invalid\n")
+
+    def test_revert_sets_author_for_a_commit_without_global_config(self) -> None:
+        repo = self.root / "workspace/01_setup/repo"
+        git(repo, "config", "--local", "user.name", "Wrong")
+        git(repo, "config", "--local", "user.email", "wrong@example.invalid")
+        result, feedback = self.invoke("revert", "1")
+        self.assertEqual(result, 0, feedback)
+        environment = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+            environment.pop(key, None)
+        for arguments in (("add", "project.txt"), ("commit", "-m", "First commit")):
+            subprocess.run(["git", *arguments], cwd=repo, env=environment, check=True, capture_output=True)
+        result, feedback = self.invoke("check", "1")
+        self.assertEqual(result, 0, feedback)
 
     def test_local_clone_with_hardlinked_objects_is_accepted(self) -> None:
         task = self.root / "workspace/18_clone"
@@ -254,6 +316,101 @@ class StudentCliTests(unittest.TestCase):
             self.assertIn("origin", output.getvalue())
             self.assertFalse((root / "workspace").exists())
             self.assertFalse((root / ".hw2").exists())
+
+    @staticmethod
+    def tree_bytes(root: Path) -> dict[str, bytes]:
+        return {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+    @classmethod
+    def fixture_state(cls, task: Path) -> tuple[dict[str, bytes], dict[str, str]]:
+        # Rebuilding changes index stat caches and the bare clone's source URL.
+        # Compare staged trees instead of index bytes; the source URL is unused.
+        files = {name: content for name, content in cls.tree_bytes(task).items()
+                 if name != ".git/index" and not name.endswith("/.git/index") and name != "remote.git/config"}
+        indexes = {str(metadata.parent.relative_to(task)): git(metadata.parent, "write-tree")
+                   for metadata in task.rglob(".git") if metadata.is_dir()}
+        return files, indexes
+
+    def test_revert_recreates_only_selected_task_without_backup(self) -> None:
+        task = self.root / "workspace/01_setup"
+        original = self.fixture_state(task)
+        sibling = self.root / "workspace/03_commit"
+        sibling_before = self.tree_bytes(sibling)
+        manifest_before = (self.root / ".hw2/manifest.json").read_bytes()
+        submissions = self.root / "submissions"
+        submissions.mkdir()
+        archive = submissions / "01_setup.tar"
+        archive.write_bytes(b"previous submission")
+        (task / "repo/project.txt").write_text("wrong answer\n")
+        (task / "repo/student-notes.txt").write_text("discard this\n")
+        shutil.rmtree(task / "repo/.git")
+        shutil.rmtree(task / "control")
+        result, feedback = self.invoke("revert", "1")
+        self.assertEqual(result, 0, feedback)
+        self.assertIn("01:", feedback)
+        self.assertEqual(self.fixture_state(task), original)
+        self.assertEqual(self.tree_bytes(sibling), sibling_before)
+        self.assertEqual((self.root / ".hw2/manifest.json").read_bytes(), manifest_before)
+        self.assertEqual(archive.read_bytes(), b"previous submission")
+        self.assertEqual({path.name for path in (self.root / "workspace").iterdir()}, set(DIRECTORIES.values()))
+
+    def test_revert_handles_legacy_and_missing_tasks(self) -> None:
+        for selection, directory in (("3", "03_commit"), ("18", "18_clone")):
+            with self.subTest(selection=selection):
+                task = self.root / "workspace" / directory
+                before = self.fixture_state(task)
+                shutil.rmtree(task)
+                result, feedback = self.invoke("revert", selection)
+                self.assertEqual(result, 0, feedback)
+                self.assertEqual(self.fixture_state(task), before)
+
+    def test_revert_invalid_number_leaves_workspace_unchanged(self) -> None:
+        before = self.tree_bytes(self.root / "workspace")
+        for selection in ("0", "33", "all", "../01_setup"):
+            result, _ = self.invoke("revert", selection)
+            self.assertEqual(result, 2)
+        self.assertEqual(self.tree_bytes(self.root / "workspace"), before)
+
+    def test_revert_generation_failure_preserves_attempt(self) -> None:
+        task = self.root / "workspace/01_setup"
+        (task / "repo/project.txt").write_text("keep this attempt\n")
+        before = self.tree_bytes(task)
+        with patch.object(hw2, "build", side_effect=ValueError("fixture failed")):
+            result, feedback = self.invoke("revert", "1")
+        self.assertEqual(result, 2)
+        self.assertIn("не изменены", feedback)
+        self.assertEqual(self.tree_bytes(task), before)
+
+    def test_revert_replacement_failure_rolls_back_attempt(self) -> None:
+        task = self.root / "workspace/01_setup"
+        before = self.tree_bytes(task)
+        rename = Path.rename
+
+        def fail_install(path, target):
+            if path.parent.name == "fresh":
+                raise OSError("cannot install fixture")
+            return rename(path, target)
+
+        with patch.object(Path, "rename", fail_install):
+            result, _ = self.invoke("revert", "1")
+        self.assertEqual(result, 2)
+        self.assertEqual(self.tree_bytes(task), before)
+
+    def test_revert_rejects_symlink_task_and_workspace(self) -> None:
+        task = self.root / "workspace/01_setup"
+        outside = self.root / "outside"
+        outside.mkdir()
+        marker = outside / "keep.txt"
+        marker.write_text("keep\n")
+        shutil.rmtree(task)
+        task.symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.invoke("revert", "1")[0], 2)
+        self.assertEqual(marker.read_text(), "keep\n")
+        task.unlink()
+        shutil.rmtree(self.root / "workspace")
+        (self.root / "workspace").symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.invoke("revert", "1")[0], 2)
+        self.assertEqual(marker.read_text(), "keep\n")
 
 
 if __name__ == "__main__":
