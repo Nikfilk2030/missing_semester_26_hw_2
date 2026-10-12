@@ -45,20 +45,3 @@ python3 hw2.py revert 1
 `workspace/` не попадает в GitHub: отправляются архивы в `submissions/`. В архиве сохраняется полное состояние учебного Git-репозитория, в том числе история, незакоммиченные изменения и `.git/config`. **Не помещайте туда токены, секреты и личные файлы.**
 
 Если переходите на другой компьютер, снова клонируйте свой репозиторий и запустите `python3 hw2.py init`: последние отправленные архивы восстановятся. Неотправленные изменения из `workspace/` останутся на старом компьютере.
-
-<details>
-<summary>Проверка преподавателем</summary>
-
-Проверяйте зафиксированный на дедлайн коммит. Собирайте проверяющий контейнер **из доверенной копии шаблона**, а не из репозитория студента; код студента не запускайте. Адрес `OWNER/REPO` берите из присланной ссылки:
-
-```sh
-docker build -t hw2-grader -f Dockerfile.grader .
-docker run --rm --network=none --read-only \
-  --tmpfs /tmp:rw,nosuid,nodev,size=256m \
-  --cap-drop=ALL --security-opt=no-new-privileges \
-  --pids-limit=128 --memory=1g --cpus=1 \
-  --mount type=bind,src=/ABS/STUDENT_CHECKOUT,dst=/student,readonly \
-  hw2-grader /student --repository OWNER/REPO --json
-```
-
-</details>
