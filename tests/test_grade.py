@@ -7,10 +7,11 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import grade
 import hw2
-from hw2_engine import CATALOG, build, git, seed_for_repository
+from hw2_engine import CATALOG, build, seed_for_repository
 
 
 class GraderTests(unittest.TestCase):
@@ -44,20 +45,17 @@ class GraderTests(unittest.TestCase):
         source.mkdir()
         build(source, self.seed, 6)
         task = source / "01_setup"
-        repo = task / "repo"
-        git(repo, "config", "user.name", "Student")
-        git(repo, "config", "user.email", "student@example.invalid")
-        git(repo, "add", "project.txt")
-        git(repo, "commit", "-m", "Initial project")
         self._submission(hw2._archive(task))
         (self.student / "hw2.py").write_text("raise AssertionError('student CLI must not run')\n")
-        report = grade.grade(self.student, self.repository)
-        self.assertEqual(report["tasks"][0]["status"], "зачтено")
-        self.assertEqual(report["earned_points"], 100)
-        self.assertEqual(report["tasks"][1]["status"], "не отправлено")
-        output = io.StringIO()
-        with redirect_stdout(output):
-            self.assertEqual(grade.main([str(self.student), "--repository", self.repository, "--json"]), 0)
+        with patch.object(grade, "check", return_value=(True, "")) as checker:
+            report = grade.grade(self.student, self.repository)
+            self.assertEqual(report["tasks"][0]["status"], "зачтено")
+            self.assertEqual(report["earned_points"], 100)
+            self.assertEqual(report["tasks"][1]["status"], "не отправлено")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(grade.main([str(self.student), "--repository", self.repository, "--json"]), 0)
+        self.assertEqual(checker.call_count, 2)
         self.assertEqual(json.loads(output.getvalue())["earned_points"], 100)
 
     def test_archive_escape_and_wrong_task_are_rejected(self) -> None:

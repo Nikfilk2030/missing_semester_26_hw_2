@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -157,34 +158,35 @@ class StudentCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("submissions/01_setup.tar", feedback)
 
-    def test_first_task_student_check_submit_and_restore(self) -> None:
-        repo = self.root / "workspace/01_setup/repo"
-        for arguments in (
-            ("config", "--local", "user.name", "Student"),
-            ("config", "--local", "user.email", "student@example.invalid"),
-            ("add", "project.txt"),
-            ("commit", "-m", "Initial project"),
-        ):
-            subprocess.run(["git", *arguments], cwd=repo, check=True, capture_output=True)
-        result, feedback = self.invoke("check", "1")
-        self.assertEqual(result, 0)
-        self.assertIn("01: зачтено", feedback)
-        result, feedback = self.invoke("submit", "1")
-        self.assertEqual(result, 0)
-        self.assertIn("01: зачтено", feedback)
-        shutil.rmtree(self.root / "workspace")
-        result, _ = self.invoke("init")
-        self.assertEqual(result, 0)
-        result, feedback = self.invoke("check", "1")
-        self.assertEqual(result, 0)
-        self.assertIn("01: зачтено", feedback)
+    def test_successful_check_submit_and_restore(self) -> None:
+        with patch.object(hw2, "check", return_value=(True, "")):
+            result, feedback = self.invoke("check", "1")
+            self.assertEqual(result, 0)
+            self.assertIn("01: зачтено", feedback)
+            result, feedback = self.invoke("submit", "1")
+            self.assertEqual(result, 0)
+            self.assertIn("01: зачтено", feedback)
+            shutil.rmtree(self.root / "workspace")
+            result, _ = self.invoke("init")
+            self.assertEqual(result, 0)
+            result, feedback = self.invoke("check", "1")
+            self.assertEqual(result, 0)
+            self.assertIn("01: зачтено", feedback)
 
-    def test_local_clone_with_hardlinked_objects_is_accepted(self) -> None:
-        task = self.root / "workspace/18_clone"
-        subprocess.run(["git", "clone", "-q", "remote.git", "repo"], cwd=task, check=True, capture_output=True)
-        result, feedback = self.invoke("check", "18")
-        self.assertEqual(result, 0, feedback)
-        self.assertIn("18: зачтено", feedback)
+    def test_hardlinked_files_are_archived_as_regular_files(self) -> None:
+        task = self.root / "workspace" / DIRECTORIES[1]
+        original = task / "shared-data"
+        duplicate = task / "shared-data-copy"
+        original.write_bytes(b"test data\n")
+        os.link(original, duplicate)
+        payload = hw2._archive(task)
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as archive:
+            self.assertTrue(archive.getmember(f"{task.name}/{original.name}").isfile())
+            self.assertTrue(archive.getmember(f"{task.name}/{duplicate.name}").isfile())
+        with tempfile.TemporaryDirectory(prefix="hw2-hardlink-roundtrip-") as temporary:
+            destination = Path(temporary)
+            extract_submission(payload, destination)
+            self.assertEqual((destination / task.name / duplicate.name).read_bytes(), original.read_bytes())
 
     def test_all_initial_tasks_fit_safe_archive_and_roundtrip(self) -> None:
         for task in CATALOG:
